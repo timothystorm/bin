@@ -1,0 +1,903 @@
+###############################################################################
+# Source utility scripts
+# These are some handy-dandy scripts that once sourced can be used just like
+# shell commands or within scripts.  See the tests to get a good handle on how
+# use and execute; and if you add a new script, please include a test.
+#
+# Quick Reference of containing scripts
+# replay    -> replays a command in a given interval
+# die       -> prints to standard error and dies - think exception
+# isdir     -> checks if an argument/argument list is/are director(y/ies)
+# checkdir  -> checks if an argument/argument lis is/are director(y/ies), tries
+#              to create the missing director(y/ies)
+# gsub      -> global text substitution
+# basename  -> returns the base (usually file) name of a path
+# dirname   -> returns the directory path from the given full path
+#              (excludes file name)
+# unslash   -> removes trailing slashes from a path
+# fixpath   -> removes duplicate entries from the $PATH
+# addpath   -> adds an entry to the $PATH
+# rmpath    -> removes an entry from the $PATH
+# date_vars -> exports date vars initialized to todays date
+# splitdate -> breaks apart a [YYYY-MM-DD] into its constituent parts
+# date2julian> converts an ISO date [YYYY-MM-DD] to a julian date
+#              (seconds since January 1, 4713 BC Greenwich noon)
+# julian2date> converts a julian date (seconds since January 1, 4713 BC
+#              Greenwich noon) to an ISO date [YYYY-MM-DD]
+# dateshift -> shifts a date by a given offset
+# yesterday -> convenience call to $ dateshift -1
+# today     -> convenience call to $ dateshift 0
+# tomorrow  -> convenience call to $ dateshift +1
+# valid_date-> determines if a date is valid
+# repeat    -> repeats a STRING for a given LENGTH
+# hr        -> convenience call to $ repeat = 80
+###############################################################################
+ 
+###############################################################################
+#  command: replay
+#  usage: replay INTERVAL COMMAND
+#  example: $ replay 5 tail process.log
+#  description: Replays (re-executes) a COMMAND every INTERVAL of seconds.
+#               Cntrl + C (break) to stop executing.
+###############################################################################
+replay(){
+  [ $# -lt 2 ] && echo "usage: replay INTERVAL COMMAND" && return
+  [ ! $(echo $1 | egrep "^[0-9]+$") ] &&
+   echo "first arg must be numeric"  && return
+ 
+  pause=$1
+  shift
+  while :
+  do
+    eval $@
+    sleep $pause
+  done
+}
+ 
+_test_replay(){
+  # visual test
+  replay 2 cal 12 2010
+}
+ 
+###############################################################################
+#  command: die
+#  usage: die NUM [MESSAGE ...]
+#  example: checkdirs "$HOME/scr" "$HOME/bin" || die 13 "Could not create $dir"
+#  description: The die function takes an error number and a message as
+#               arguments. The first argument is stored in $result, and the rest
+#               are printed to the standard error.  !! USE WITH CAUTION !!
+###############################################################################
+die() {
+  result=$1
+  shift
+  printf "%s\n" "$*" >&2
+  exit $result
+}
+ 
+_test_die(){
+  # the test is whether or not this shell dies. visual test
+  die 13 "I'm melting... melting... melt...."
+}
+ 
+###############################################################################
+#  command: isdir
+#  usage: isdir PATTERN
+#  example: isdir /home/timothy/grid.ps && echo YES || echo NO
+#  description:
+###############################################################################
+isdir(){
+  test -d "$1"
+}
+ 
+_test_isdir(){
+  ! isdir /usr/bin && echo "FAIL: /usr/bin is a directory"
+ isdir /blues/clues && echo "FAIL: /blues/clues is not a directory"
+}
+ 
+###############################################################################
+#  command: checkdir
+#  usage: checkdir DIRPATH ...
+#  example: checkdir /qwe /bin uio /.autofsck || echo Failed
+#  description: checks whether each of its arguments is an existing directory,
+#               and attempts to create it if it doesn’t; it prints an error
+#               message if a directory does not exist and cannot be created. If
+#               any directory could not be created, it returns an error status.
+###############################################################################
+checkdir() {
+  checkdirs=0 ## Return status: success unless a check fails
+  for dir ## Loop through the directory on the command line
+  do
+      [ -d "$dir" ] && continue ||
+      mkdir -p "$dir" ||
+      checkdirs=1
+  done
+  return $checkdirs ## Return error status
+}
+ 
+_test_checkdir(){
+  checkdir /blues/clues
+ ! isdir /blues && echo "FAIL: should have created /blues"
+ ! isdir /blues/clues && echo "FAIL: should have created /blues/clues"
+ 
+ $(rm -fr /blues) # cleanup after yourself
+}
+ 
+###############################################################################
+#  command: datecp
+#  usage: datecp SOURCE DIRECTORY [DATE]
+#  example: $ datecp tmp.txt . # creates tmp.txt_2009-06-08 in current directory
+#           $ datecp tmp.txt . `tomorrow` # creates tmp.txt_2009-06-09
+#  description: Quick function for copying a file from one location to another
+#               and appending a date to the end.  Useful for backups.
+###############################################################################
+datecp(){
+  cp "$1" "${2}/${1}_${3:-$(today)}"
+}
+ 
+_test_datecp(){
+  tmp="__tmp__.txt"
+  touch "$tmp"
+ 
+ $(datecp ${tmp} .)
+ [ $(ls | grep ${tmp}_$(today) | wc -l) -ne 1 ] &&
+   echo "FAIL: expected to create the file with today's date appended"
+ 
+ $(datecp ${tmp} . 1776-07-04)
+ [ $(ls | grep ${tmp}_1776-07-04 | wc -l) -ne 1 ] &&
+   echo "FAIL: expected to create the file with independence date appended"
+  
+ # cleanup
+ $(rm $tmp)
+ $(rm ${tmp}_*)
+}
+###############################################################################
+#  command: gsub
+#  usage: gsub STRING PATTERN [TEXT] ## result is printed
+#         _gsub STRING PATTERN [TEXT] ## result is stored in $_GSUB
+#  example: $ gsub "spaced file name.doc" " " "_"
+#           $ spaced_file_name.doc
+#  description: Globally replaces TEXT with STRING for each PATTERN found
+###############################################################################
+_gsub(){
+  ## assign the string to sr2; this will be gobbled up with each substitution
+  sr2=$1
+ 
+  ## return an error if there is no pattern specified
+  [ -n "$2" ] || return 1
+ 
+  ## assign the search pattern to s_srch
+  s_srch=${2}
+ 
+  ## assign the replacement text, if any, to rep
+  rep=$3
+ 
+  ## sr1 will hold the portion of the string that has been processed
+  sr1=
+ 
+  ## loop until sr2 no longer contains the search pattern
+  while :
+  do
+    case $sr2 in
+      *$s_srch*)
+        ## add the string up to the match,
+        ## and the replacement text, to sr1
+        sr1=$sr1${sr2%%$s_srch*}$rep
+        ## remove up to the match from sr2
+        sr2=${sr2#*$s_srch}
+      ;;
+      *) break ;;
+    esac
+  done
+  _GSUB=$sr1$sr2
+}
+ 
+gsub(){
+  _gsub "$@" && printf "%s\n" "$_GSUB"
+}
+ 
+_test_gsub(){
+  actual=$(gsub "file with spaces.txt" " " "_")
+ expect="file_with_spaces.txt"
+ 
+ [ "$expect" != "$actual" ] &&
+   echo "FAIL: expected <$expect> but was <$actual>"
+}
+ 
+###############################################################################
+#  command: basename | _basename
+#  usage: basename PATHNAME [SUFFIX] ## result is printed
+#         _basename PATHNAME [SUFFIX] ## result is stored in $_BASENAME
+#  example: $ basename /usr/local/bin/
+#           $ bin
+#  description: The basename command extracts the last element, usually a
+#               filename, from a pathname.
+###############################################################################
+strip_trailing_slashes(){
+  _STRIP=$1
+  while :
+  do
+    case $_STRIP in
+      ## If the last character is a slash, remove it
+      */) _STRIP=${_STRIP%/} ;;
+      ## otherwise exit the loop (and function)
+      *) break ;;
+    esac
+  done
+}
+ 
+_basename(){ ## extract the last element from a pathname
+  fn_path=$1
+  fn_suffix=$2
+  case $fn_path in
+    ## The spec says: "If string is a null string, it is
+    ## unspecified whether the resulting string is '.' or a
+    ## null string." This implementation returns a null string
+    "") _BASENAME=; return ;;
+    *)
+    strip_trailing_slashes "$fn_path"
+ 
+    case $_STRIP in
+      "") fn_path="/" ;;
+      *) fn_path=${_STRIP##*/} ;;
+    esac
+    ;;
+  esac
+ 
+  ## If a suffix was given, and it is the final portion of the file name (but not
+  ## the whole name), then remove it.
+  case $fn_path in
+    $fn_suffix | "/" ) _BASENAME="$fn_path" ;;
+    *) _BASENAME=${fn_path%$fn_suffix} ;;
+  esac
+}
+ 
+basename(){
+  _basename "$@" &&
+  printf "%s\n" "$_BASENAME"
+}
+ 
+_test_basename(){
+  actual=$(basename "/directory/to/a/file.txt")
+ expect="file.txt"
+ 
+ [ "$expect" != "$actual" ] &&
+   echo "FAIL: expected <$expect> but was <$actual>"
+}
+ 
+###############################################################################
+#  command: dirname | _dirname
+#  usage: dirname PATHNAME ## result is printed
+#          _dirname PATHNAME ## result is stored in $_DIRNAME
+#  example: $ dirname /home/timothy/files/production/dates.dat
+#           $ /home/timothy/files/production
+#  description: Return all of a pathname except the part that would be returned
+#               by basename. In other words, print the directory that contains
+#               the last element of the pathname.
+###############################################################################
+_dirname(){
+  _DIRNAME=$1
+ 
+  strip_trailing_slashes
+  case $_DIRNAME in
+    "") _DIRNAME='/'; return ;;
+    */*) _DIRNAME="${_DIRNAME%/*}" ;;
+    *) _DIRNAME='.'; return ;;
+  esac
+  strip_trailing_slashes
+ 
+  _DIRNAME=${_DIRNAME:-/}
+}
+ 
+dirname(){
+  _dirname "$@" &&
+  printf "%s\n" "$_DIRNAME"
+}
+ 
+_test_dirname(){
+  actual=$(dirname "/directory/to/a/file.txt")
+ expect="/directory/to/a"
+ 
+ [ "$expect" != "$actual" ] &&
+   echo "FAIL: expected <$expect> but was <$actual>"
+}
+ 
+###############################################################################
+#  command: unslash | _unslash
+#  usage: unslash "pathname" ## result is printed
+#         _unslash "pathname" ## result in $_UNSLASH
+#  example: $ unslash /usr//bin//////
+#           $ /usr/bin
+#  description: Trailing slashes are removed
+###############################################################################
+_unslash(){
+  _UNSLASH=$1
+ 
+  while :
+  do
+    case $_UNSLASH in
+      ## remove trailing slashes
+      */) _UNSLASH=${_UNSLASH%/} ;;
+      ## change // to /
+      *//*)
+        _gsub "$_UNSLASH" "//" "/"
+        _UNSLASH=$_GSUB
+      ;;
+      *) break ;;
+    esac
+  done
+}
+ 
+unslash(){
+  _unslash "$@" && printf "%s\n" "$_UNSLASH"
+}
+ 
+_test_unslash(){
+  actual=$(unslash /directory/with/slashes/////)
+ expect="/directory/with/slashes"
+ 
+ [ "$expect" != "$actual" ] &&
+  echo "FAIL: expected <$expect> but was <$actual>"
+}
+ 
+###############################################################################
+#  command: fixpath
+#  usage: fixpath [-v]
+#  example: $ fixpath -v
+#           $ fixpath: removing /usr/bin (already in PATH)
+#  description: removes PATH duplications
+###############################################################################
+fixpath(){
+  verbose=0
+  OPTIND=1
+  while getopts v var
+  do
+    case "$var" in
+      v) verbose=1 ;;
+    esac
+  done
+ 
+  ## assign the directories in PATH to the positional parameters
+  oldIFS=$IFS
+  IFS=":"
+  set -- $PATH
+  IFS=$oldIFS
+  newPATH=
+  for p ## Loop through directories in $PATH (now set as positional parameters)
+  do
+    case $p in
+      ""|.) continue ;; ## do not allow current directory in PATH
+    esac
+   
+    if [ -d "$p" ] ## Is it actually a directory?
+    then
+      _unslash "$p" ## Remove multiple slashes
+      p=$_UNSLASH
+   
+      case :$newPATH: in
+        *:"$p":*) [ $verbose -ge 1 ] &&
+          echo "checkpath: removing $p (already in PATH)" >&2
+        ;;
+        *) newPATH=${newPATH:+$newPATH:}$p ;; ## Add directory
+      esac
+    else
+      [ $verbose -ge 1 ] &&
+      echo "checkpath: $p is not a directory; removing it from PATH" >&2
+    fi
+  done
+  PATH=$newPATH
+}
+ 
+_test_fixpath(){
+  # grab the first $PATH element then duplicate and append
+ pebble=$(path | head -n 1)
+ export PATH=$PATH:$pebble
+  if [ $(path | grep $pebble | wc -l) -le 1 ]
+ then
+    echo "SETUP-FAILURE. Expected more than 1 occurance of $pebble in \$PATH"
+ fi
+ 
+ fixpath
+ i=$(path | egrep "^$pebble$" | wc -l)
+ [ $i -gt 1 ] &&
+  echo "FAIL: expected only 1 occurance of $pebble in \$PATH but found <$i>"
+}
+ 
+###############################################################################
+#  command: addpath
+#  usage: addpath [-iq]
+#  example: $ addpath /usr/local/bin $HOME/bin
+#           $ path
+#           /bin
+#           /usr/bin
+#           /usr/local/bin
+#           /home/timothy/bin
+#  description: The addpath function checks that each argument is a directory,
+#               and that the directory is not already in the PATH. If the
+#               argument passes the tests, it is added to the end of PATH. The
+#               -i option tells addpath to insert directories at the beginning
+#               of PATH instead of appending them.
+###############################################################################
+addpath(){
+  ## Set defaults
+  prefix=0 ## Do not insert at beginning of PATH
+  quiet=0 ## Do print information on bad directories
+ 
+  ## Parse command-line options
+  OPTIND=1
+  while getopts iq var
+  do
+    case "$var" in
+      i) prefix=1 ;;
+      q) quiet=1 ;;
+    esac
+  done
+ 
+  shift $(( $OPTIND - 1 ))
+  for p ## Loop through directories on the command line
+  do
+    _unslash "$p" ## remove double slashes
+    p=$_UNSLASH
+  case :$PATH: in
+      *:$p:*) [ $quiet -eq 0 ] && echo "addpath: $p already in path" >&2
+        continue ## Skip directories already in PATH
+      ;;
+  esac
+ 
+  if [ -d "$p" ]
+  then
+    if [ $prefix -eq 1 ]
+    then
+      PATH="$p:$PATH"
+    else
+      PATH="$PATH:$p"
+    fi
+  else
+    [ $quiet -eq 0 ] && echo "addpath: $p is not a directory" >&2
+  fi
+  done
+}
+ 
+_test_addpath(){
+  tmp_dir="temporary_test_directory"
+ mkdir $tmp_dir
+ 
+ addpath $tmp_dir
+ i=$(path | grep $tmp_dir | wc -l)
+ [ $i -ne 1 ] &&
+  echo "FAIL: expected only 1 occurance of $tmp_dir in \$PATH but found <$i>"
+  
+  $(rm -fr $tmp_dir)
+ $(fixpath)
+}
+ 
+###############################################################################
+#  command: rmpath
+#  usage: rmpath DIR ...
+#  example: $ rmpath /usr/bin
+#  description: remove directory or directories from $PATH
+###############################################################################
+rmpath(){
+  for p in "$@"
+  do
+    _unslash "$p"
+    p=$_UNSLASH
+ 
+    case $PATH in ## Look for directory....
+      "$p":*) PATH=${PATH#$p:} ;; ## at beginning of PATH
+      *:"$p") PATH=${PATH%:$p} ;; ## at end of PATH
+      *:"$p":*) type _sub >/dev/null 2>&1 || . string-funcs
+        _sub "$PATH" ":$p:" ":" ## in the middle
+        PATH=$_SUB ;;
+    esac
+  done
+}
+ 
+_test_rmpath(){
+  tmp_dir="/temporary_test_directory"
+ mkdir -p $tmp_dir
+ export PATH=$PATH:$tmp_dir
+ 
+ i=$(path | grep $tmp_dir | wc -l)
+ [ $i -ne 1 ] &&
+  echo "SETUP-FAILURE: expected 1 $tmp_dir in \$PATH but was <$i>"
+ 
+ rmpath $tmp_dir
+ i=$(path | grep $tmp_dir | wc -l)
+ [ $i -gt 0 ] &&
+  echo "FAIL: expected 0 $tmp_dir in \$PATH but was <$i>"
+ 
+  $(rm -fr $tmp_dir)
+ $(fixpath)
+}
+ 
+###############################################################################
+#  command: path
+#  usage: path [DIR ...]
+#  example: $ path
+#           /bin
+#           /usr/bin
+#  description: remove directory or directories from $PATH
+###############################################################################
+path(){
+  ( ## Use a subshell so IFS is not changed in the main shell
+    IFS=:
+    printf "%s\n" ${PATH}
+  )
+}
+ 
+_test_path(){
+  #assuming that there is always at least one $PATH element
+ i=$(path | wc -l)
+  [ $i -lt 1 ] &&
+   echo "FAIL: expected at least 1 item/line but got <$i>"
+}
+ 
+###############################################################################
+#  command: date_vars
+#  usage: date_vars
+#  example: $ datevars
+#           DATE=2005-02-05
+#           YEAR=2005
+#           MONTH=02
+#           DAY=05
+#           TIME=22:26:04
+#           HOUR=22
+#           MINUTE=26
+#           SECOND=04
+#           datestamp=2005-02-05_22.26.04
+#           DayOfWeek=Sat
+#           DayOfYear=036
+#           DayNum=6
+#           MonthAbbrev=Feb
+#  description: exports initialized date attributes, think constants that can
+#               be updated by executing date_vars.
+###############################################################################
+date_vars(){
+  eval $(date "+DATE=%Y-%m-%d
+  YEAR=%Y
+  MONTH=%m
+  DAY=%d
+  TIME=%H:%M:%S
+  HOUR=%H
+  MINUTE=%M
+  SECOND=%S
+  datestamp=%Y-%m-%d_%H.%M.%S
+  DayOfWeek=%a
+  DayOfYear=%j
+  DayNum=%w
+  MonthAbbrev=%b")
+ 
+  ## Remove leading zeroes for use in arithmetic expressions
+  _MONTH=${MONTH#0}
+  _DAY=${DAY#0}
+  _HOUR=${HOUR#0}
+  _MINUTE=${MINUTE#0}
+  _SECOND=${SECOND#0}
+ 
+  ## Sometimes the variable, TODAY, is more appropriate in the context of a
+  ## particular script, so it is created as a synonym for $DATE
+  TODAY=$DATE
+  export DATE YEAR MONTH DAY TODAY TIME HOUR MINUTE SECOND
+  export datestamp MonthAbbrev DayOfWeek DayNum
+}
+ 
+_test_date_vars(){
+  date_vars
+ [ $YEAR != $(date "+%Y") ] && echo "FAIL: expected years to match"
+ [ $MONTH != $(date "+%m") ] && echo "FAIL: expected months to match"
+ [ $DAY != $(date "+%d") ] && echo "FAIL: expected days to match"
+ [ $HOUR != $(date "+%H") ] && echo "FAIL: expected hours to match"
+ [ $MINUTE != $(date "+%M") ] && echo "FAIL: expected minutes to match"
+ [ $SECOND != $(date "+%S") ] && echo "FAIL: expected seconds to match"
+  [ $DayOfWeek != $(date "+%a") ] && echo "FAIL: expected day of week to match"
+ [ $DayOfYear != $(date "+%j") ] && echo "FAIL: expected day of year to match"
+ [ $DayNum != $(date "+%w") ] && echo "FAIL: expected day number to match"
+ [ $MonthAbbrev != $(date "+%b") ] &&
+   echo "FAIL: expected month abbreviation to match"
+}
+###############################################################################
+#  command: split_date
+#  usage: split_date "DATE" [VAR1 [VAR2 [VAR3]]]
+#  example: $ format=" Day: %s\nMonth: %s\n Year: %s\n"
+#           $ split_date "May 5 1977" month day year
+#           $ printf "$format" "$day" "$month" "$year"
+#           Day: 5
+#           Month: May
+#           Year: 1977
+#  description: Using a customized field separator, IFS, split-date breaks the
+#               date into three parts and assigns each part to a variable
+#               specified on the command line. Leading zeroes are stripped, so
+#               the results can be used in arithmetic expressions. If no
+#               variables are specified on the command line, defaults are used,
+#               assigning the first part to SD_YEAR, the second to SD_MONTH, and
+#               the third to SD_DAY
+###############################################################################
+split_date(){
+  ## Assign defaults when no variable names are given on the command line
+  sd_1=${2:-SD_YEAR}
+  sd_2=${3:-SD_MONTH}
+  sd_3=${4:-SD_DAY}
+  oldIFS=$IFS ## save current value of field separator
+  IFS='-/. $TAB$NL' ## new value allows date to be supplied in other formats
+  set -- $1 ## place the date into the positional parameters
+  IFS=$oldIFS ## restore IFS
+ 
+  [ $# -lt 3 ] && return 1 ## The date must have 3 fields
+ 
+  ## Remove leading zeroes and assign to variables
+  eval "$sd_1=\"${1#0}\" $sd_2=\"${2#0}\" $sd_3=\"${3#0}\""
+}
+ 
+_test_split_date(){
+  split_date "July 4 1776" month day year
+ [ $month != "July" ] && echo "FAIL: expected month to be 'July'"
+ [ $day != "4" ] && echo "FAIL: expected day to be '4'"
+ [ $year != "1776" ] && echo "FAIL: expected year to be '1776'"
+}
+ 
+###############################################################################
+#  command: date2julian && julian2date
+#  usage: date2julian [YEAR-MONTH-DAY]
+#         julian2date JulianDayNumber
+#  example: $ date2julian 1974-10-18
+#           2442339
+#           $ julian2date 2441711
+#           1973-01-28
+#  description: The conversion functions to and from a Julian Day are mirror
+#               images. The first takes an ISO date (YYYY-MM-DD), day, month,
+#               and year, and converts them to a single JD integer. The reverse
+#               function, julian2date, converts the JD number to an ISO date.
+###############################################################################
+_date2julian(){
+  ## If there's no date on the command line, use today's date
+  case $1 in
+    "") date_vars
+      set -- $TODAY
+    ;;
+  esac
+ 
+  ## Break the date into year, month and day
+  split_date "$1" d2j_year d2j_month d2j_day || return 2
+ 
+  ## Since leap years add a day at the end of February,
+  ## calculations are done from 1 March 0000 (a fictional year)
+  d2j_tmpmonth=$((12 * $d2j_year + $d2j_month - 3))
+ 
+  ## If it is not yet March, the year is changed to the previous year
+  d2j_tmpyear=$(( $d2j_tmpmonth / 12))
+ 
+  ## The number of days from 1 March 0000 is calculated
+  ## and the number of days from 1 Jan. 4713BC is added
+  _DATE2JULIAN=$((
+    (734 * $d2j_tmpmonth + 15) / 24 - 2 * $d2j_tmpyear + $d2j_tmpyear/4
+    - $d2j_tmpyear/100 + $d2j_tmpyear/400 + $d2j_day + 1721119 ))
+}
+ 
+date2julian(){
+  _date2julian "$1" && printf "%s\n" "$_DATE2JULIAN"
+}
+ 
+# ISO date from JD number
+_julian2date(){
+  ## Check for numeric argument
+  case $1 in
+    ""|*[!0-9]*) return 1 ;;
+  esac
+ 
+  ## To avoid using decimal fractions, the script uses multiples.
+  ## Rather than use 365.25 days per year, 1461 is the number of days
+  ## in 4 years; similarly, 146097 is the number of days in 400 years
+  j2d_tmpday=$(( $1 - 1721119 ))
+  j2d_centuries=$(( (4 * $j2d_tmpday - 1) / 146097))
+  j2d_tmpday=$(( $j2d_tmpday + $j2d_centuries - $j2d_centuries/4))
+  j2d_year=$(( (4 * $j2d_tmpday - 1) / 1461))
+  j2d_tmpday=$(( $j2d_tmpday - (1461 * $j2d_year) / 4))
+  j2d_month=$(( (10 * $j2d_tmpday - 5) / 306))
+  j2d_day=$(( $j2d_tmpday - (306 * $j2d_month + 5) / 10))
+  j2d_month=$(( $j2d_month + 2))
+  j2d_year=$(( $j2d_year + $j2d_month/12))
+  j2d_month=$(( $j2d_month % 12 + 1))
+ 
+  ## pad day and month with zeros if necessary
+  case $j2d_day in
+    ?) j2d_day=0$j2d_day
+    ;;
+  esac
+ 
+  case $j2d_month in
+    ?) j2d_month=0$j2d_month
+    ;;
+  esac
+ 
+  _JULIAN2DATE=$j2d_year-$j2d_month-$j2d_day
+}
+ 
+julian2date(){
+  _julian2date "$1" && printf "%s\n" "$_JULIAN2DATE"
+}
+ 
+_test_date2julian(){
+  actual=$(date2julian 2010-07-04)
+ expect=2455382
+ 
+ [ $actual != $expect ] &&
+   echo "FAIL: expected julian to be $expect but was <$actual>"
+}
+ 
+_test_julian2date(){
+  actual=$(julian2date 2455382)
+ expect="2010-07-04"
+ 
+ [ $actual != $expect ] &&
+   echo "FAIL: expected date to be $expect but was <$actual>"
+}
+ 
+###############################################################################
+#  command: dateshift
+#  usage: dateshift [YYYY-MM-DD] OFFSET
+#  example: $ dateshift -1 ## at the time of writing, it is June 17, 2009
+#           2009-6-16
+#           $ dateshift 2009-12-25 +12
+#           2010-01-06
+#  description: Shifts a date [YYYY-MM-DD] by the given OFFSET [+|-] days
+###############################################################################
+_dateshift(){
+  case $# in
+    ## If there is only 1 argument, it is the offset
+    ## so use today's date
+    0|1) ds_offset=${1:-0}
+      date_vars
+      ds_date=$TODAY
+    ;;
+    ## ...otherwise the first argument is the date
+    *) ds_date=$1
+      ds_offset=$2
+    ;;
+  esac
+  while :
+  do
+    case $ds_offset in
+      0*|+*) ds_offset=${ds_offset#?} ;; ## Remove leading zeros or plus signs
+      -*) break ;; ## Negative value is OK; exit the loop
+      "") ds_offset=0; break ;; ## Empty offset equals 0; exit loop
+      *[!0-9]*) return 1 ;; ## Contains non-digit; return with error
+      *) break ;; ## Let's assume it's OK and continue
+    esac
+  done
+ 
+  ## Convert to Julian Day
+  _date2julian "$ds_date"
+ 
+  ## Add offset and convert back to ISO date
+  _julian2date $(( $_DATE2JULIAN + $ds_offset ))
+ 
+  ## Store result
+  _DATESHIFT=$_JULIAN2DATE
+}
+ 
+dateshift(){
+  _dateshift "$@" && printf "%s\n" "$_DATESHIFT"
+}
+ 
+yesterday(){
+  dateshift -1
+}
+ 
+today(){
+  dateshift 0
+}
+ 
+tomorrow(){
+  dateshift +1
+}
+
+lastweek(){
+  dateshift -7
+}
+
+nextweek(){
+  dateshift 7
+}
+ 
+_test_dateshift(){
+  actual=$(dateshift 2010-07-04 10)
+ expect="2010-07-14"
+ [ $actual != $expect ] && echo "FAIL: expected <$expect> but was <$actual>"
+ 
+ actual=$(dateshift 2010-07-04 -10)
+ expect="2010-06-24"
+ [ $actual != $expect ] && echo "FAIL: expected <$expect> but was <$actual>"
+ 
+  actual=$(dateshift 2010-07-04 0)
+ expect="2010-07-04"
+ [ $actual != $expect ] && echo "FAIL: expected <$expect> but was <$actual>"
+}
+ 
+###############################################################################
+#  command: valid_date
+#  usage: valid_date [YYYY-MM-DD]
+#  example: $ valid_date 2009-3-29 && echo TRUE || echo FALSE
+#           FALSE
+#           $ valid_date 2009-3-28 && echo TRUE || echo FALSE
+#           TRUE
+#  description: evaluates if a date is valid
+###############################################################################
+valid_date(){
+  _date2julian "$1" || return 8
+  _julian2date $_DATE2JULIAN || return 7
+  [ $_JULIAN2DATE = $1 ]
+}
+ 
+_test_valid_date(){
+ ! valid_date 2010-01-01 && echo "FAIL: 2010-01-01 is a valid date"
+ ! valid_date 2010-12-31 && echo "FAIL: 2010-12-31 is a valid date"
+ ! valid_date 2010-02-28 && echo "FAIL: 2010-02-28 is a valid date"
+ 
+ valid_date 2010-02-29 && echo "FAIL: 2010-02-29 is an invalid date"
+ valid_date 2010-06-31 && echo "FAIL: 2010-06-31 is an invalid date"
+ valid_date 0000-00-00 && echo "FAIL: 0000-00-00 is an invalid date"
+}
+ 
+###############################################################################
+#  command: repeat
+#  usage: repeat [-n] STRING LENGTH
+#  example: $ repeat = 30
+#           ==============================
+#  description: This function produces a string of LENGTH characters, or, if the
+#               -n option is used, with LENGTH repetitions of STRING. All tests
+#               are visual.
+###############################################################################
+_repeat(){
+  ## If the first argument is -n, repeat the string N times
+  ## otherwise repeat it to a length of N characters
+  case $1 in
+    -n) shift
+      r_num=$(( ${#1} * $2 ))
+    ;;
+    *) r_num=$2
+    ;;
+  esac
+ 
+  _REPEAT=$1
+ 
+  while [ ${#_REPEAT} -lt ${r_num} ]
+  do
+    _REPEAT=$_REPEAT$_REPEAT$_REPEAT
+  done
+ 
+  while [ ${#_REPEAT} -gt $r_num ]
+  do
+    _REPEAT=${_REPEAT%?}
+  done
+}
+ 
+repeat(){
+  _repeat "$@" && printf "%s\n" "${_REPEAT}"
+}
+ 
+hr(){
+  repeat _ ${1:-80}; echo ""
+}
+ 
+###############################################################################
+# TESTS all scripts - except visual or negative affect scripts
+###############################################################################
+_test_all_utils(){
+ _test_isdir
+ _test_checkdir
+ _test_datecp
+ _test_gsub
+ _test_basename
+ _test_dirname
+ _test_unslash
+ _test_fixpath
+ _test_addpath
+ _test_rmpath
+ _test_path
+ _test_date_vars
+ _test_split_date
+ _test_date2julian
+ _test_julian2date
+ _test_dateshift
+ _test_valid_date
+}
