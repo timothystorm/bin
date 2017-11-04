@@ -1,9 +1,11 @@
 #!/usr/bin/env groovy
 
 /* 
-  Inner join of 1 primary data set with 0* data sets.  
+  Joinx 1 primary data set with 0* data sets.  
+  Removes duplicate lines automatically.
+  Good for small data sets.
 
-  Usage: Inner.groovy primary_file [nth_file...]
+  Usage: Join.groovy primary_file [nth_file...]
 */
 
 if(args.length < 1) {

@@ -2,7 +2,7 @@
 
 ################################################################################
 # Utility to convert JDK version by chaninging the 'current' symlink to the 
-# desired version of Java.  $JAVA_HOME environment varialbe must be pointing to 
+# desired version of Java.  $JAVA_HOME environment variable must be pointing to 
 # 'current' path for this script to work correctly.
 # 
 # usage: $0 [6|7|8|9]
